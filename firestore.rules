@@ -3,23 +3,45 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Regole globali: gli Admin autenticati (con custom claim 'admin') possono fare tutto
-    match /{document=**} {
-      allow read, write: if request.auth != null && request.auth.token.admin == true;
+    // Funzione helper per verificare se l'utente è autenticato e ha ruolo admin
+    function isAdmin() {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // Simulazione di API Pubblica Serverless per i Dati Live
-    // Nota: Le Firestore Security Rules standard non leggono "request.origin" né i query parameters (come ?apiKey=...).
-    // Per ottenere il comportamento richiesto in una vera applicazione serverless Firestore:
-    // 1. Dominio Autorizzato: Si abilita "Firebase App Check" con reCAPTCHA Enterprise o simili. Questo blocca le richieste non provenienti dal dominio.
-    // 2. Chiave API: Si utilizza la chiave come ID del documento per la lettura diretta (es. /Public_Live_Data/API_KEY_123)
-    //    oppure si imposta una regola che valida i dati.
+    // Collezione Utenti (Lettura pubblica a se stessi per il ruolo)
+    // Creazione: Solo se il ruolo che si sta creando è 'guest' o 'player' (nessuno può crearsi come 'admin')
+    // Aggiornamento: L'utente può aggiornare il suo profilo, ma non può cambiare il suo ruolo (deve rimanere uguale a quello precedente, o l'admin deve cambiarlo)
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId && (request.resource.data.role == 'player' || request.resource.data.role == 'guest');
+      allow update: if request.auth != null && request.auth.uid == userId && request.resource.data.role == resource.data.role;
+    }
 
-    match /Public_Live_Data/{documentId} {
-      // In assenza di backend Node.js, l'approccio migliore per Firestore puro
-      // è permettere la lettura in sola lettura (blindando il dominio con Firebase App Check).
-      // Se si usa l'API Key come ID del documento:
+    // Tornei e sottomodelli (Gruppi, Partite)
+    // Chiunque può leggere (Visitatore)
+    // Solo l'Admin può scrivere/modificare
+    match /tournaments/{tournamentId} {
       allow read: if true;
+      allow write: if isAdmin();
+
+      match /groups/{groupId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+
+      match /matches/{matchId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+    }
+
+    // API Pubblica Serverless per App Esterne
+    // Le API Key sono salvate come ID del documento: /public_tournaments/{API_KEY}
+    match /public_tournaments/{apiKey} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }
